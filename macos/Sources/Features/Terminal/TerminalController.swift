@@ -56,6 +56,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     /// The notification cancellable for focused surface property changes.
     private var surfaceAppearanceCancellables: Set<AnyCancellable> = []
 
+    /// Phase 1 shell state that drives the surrounding SwiftUI chrome.
+    private let appState = AppState()
+
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
          withSurfaceTree tree: SplitTree<Ghostty.SurfaceView>? = nil,
@@ -1036,14 +1039,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
-            TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            Phase1TerminalIDEView(appState: appState) {
+                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+            }
         }
 
         // Set the initial content size on the container so that
         // intrinsicContentSize returns the correct value immediately,
         // without waiting for @FocusedValue to propagate through the
         // SwiftUI focus chain.
-        container.initialContentSize = focusedSurface?.initialSize
+        container.initialContentSize = phase1InitialContentSize ?? focusedSurface?.initialSize
 
         window.contentView = container
 
@@ -1660,5 +1665,18 @@ extension TerminalController {
         } else {
             return nil
         }
+    }
+
+    private var phase1InitialContentSize: NSSize? {
+        guard let terminalSize = focusedSurface?.initialSize else { return nil }
+
+        let width =
+            terminalSize.width +
+            Phase1TerminalIDELayout.sidebarWidth +
+            Phase1TerminalIDELayout.rightPanelWidth +
+            (Phase1TerminalIDELayout.dividerWidth * 2)
+        let height = terminalSize.height + Phase1TerminalIDELayout.tabBarHeight
+
+        return .init(width: width, height: height)
     }
 }
