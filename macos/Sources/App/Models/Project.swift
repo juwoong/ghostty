@@ -23,27 +23,17 @@ struct Project: Identifiable, Equatable, Codable {
 }
 
 extension Project {
-    static var sampleData: [Project] {
-        [
-            Project(
-                name: "ghostty",
-                sessions: [
-                    Session(name: "main", agentState: .idle),
-                    Session(name: "phase1-layout", agentState: .thinking, isActive: true),
-                    Session(name: "review-notes", agentState: .waitingInput),
-                ],
-                isExpanded: true,
-                directoryPath: "/Users/juwoong/gudos/ghostty"
-            ),
-            Project(
-                name: "playground",
-                sessions: [
-                    Session(name: "main", agentState: .toolRunning),
-                    Session(name: "port-check", agentState: .error),
-                ],
-                isExpanded: false,
-                directoryPath: "/Users/juwoong/gudos/playground"
-            ),
-        ]
+    static func defaultName(for directoryPath: String) -> String {
+        let url = URL(fileURLWithPath: directoryPath)
+        return url.lastPathComponent.isEmpty ? directoryPath : url.lastPathComponent
+    }
+
+    static func sidebarRoot(directoryPath: String) -> Project {
+        return Project(
+            name: defaultName(for: directoryPath),
+            sessions: [],
+            isExpanded: true,
+            directoryPath: directoryPath
+        )
     }
 }

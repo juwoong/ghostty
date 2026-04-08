@@ -22,19 +22,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         case .native: "Terminal"
         case .hidden: "TerminalHiddenTitlebar"
         case .transparent: "TerminalTransparentTitlebar"
-        case .tabs:
-#if compiler(>=6.2)
-            if #available(macOS 26.0, *) {
-                "TerminalTabsTitlebarTahoe"
-            } else {
-                "TerminalTabsTitlebarVentura"
-            }
-#else
-            "TerminalTabsTitlebarVentura"
-#endif
+        case .tabs: "Terminal"
         }
 
         return nib
+    }
+
+    private struct InternalTerminalTab {
+        let id: UUID
+        var surfaceTree: SplitTree<Ghostty.SurfaceView>
+        var focusedSurfaceId: UUID?
+        var title: String
     }
 
     /// This is set to true when we care about frame changes. This is a small optimization since
@@ -58,6 +56,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     /// Phase 1 shell state that drives the surrounding SwiftUI chrome.
     private let appState = AppState()
+    private var appStateCancellables: Set<AnyCancellable> = []
+    private var internalTabs: [InternalTerminalTab] = []
+    private var activeInternalTabId: UUID?
 
     init(_ ghostty: Ghostty.App,
          withBaseConfig base: Ghostty.SurfaceConfiguration? = nil,
@@ -75,6 +76,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         self.derivedConfig = DerivedConfig(ghostty.config)
 
         super.init(ghostty, baseConfig: base, surfaceTree: tree)
+        initializeInternalTabs()
+        bindAppState()
 
         // Setup our notifications for behaviors
         let center = NotificationCenter.default
@@ -157,9 +160,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             window.surfaceIsZoomed = to.zoomed != nil
         }
 
+        syncActiveInternalTabSnapshot()
+        syncAppStateSessions()
+
         // If our surface tree is now nil then we close our window.
         if to.isEmpty {
-            self.window?.close()
+            if internalTabs.count > 1 {
+                closeActiveInternalTabImmediately()
+            } else {
+                self.window?.close()
+            }
         }
     }
 
@@ -172,7 +182,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // We have a special case if our tree is empty to close our tab immediately.
         // This makes it so that undo is handled properly.
         if newTree.isEmpty {
-            closeTabImmediately()
+            closeActiveInternalTabImmediately()
             return
         }
 
@@ -181,6 +191,246 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             moveFocusTo: newView,
             moveFocusFrom: oldView,
             undoAction: undoAction)
+    }
+
+    var internalTabCount: Int { internalTabs.count }
+
+    private var managesInternalTerminalTabs: Bool {
+        true
+    }
+
+    private func initializeInternalTabs() {
+        let initialTab = InternalTerminalTab(
+            id: UUID(),
+            surfaceTree: surfaceTree,
+            focusedSurfaceId: focusedSurface?.id ?? surfaceTree.first?.id,
+            title: "Shell 1"
+        )
+        internalTabs = [initialTab]
+        activeInternalTabId = initialTab.id
+        syncAppStateSessions()
+    }
+
+    private func bindAppState() {
+        appState.$activeSessionId
+            .removeDuplicates()
+            .sink { [weak self] activeSessionId in
+                guard let self, let activeSessionId else { return }
+                guard self.activeInternalTabId != activeSessionId else { return }
+                self.switchToInternalTab(id: activeSessionId)
+            }
+            .store(in: &appStateCancellables)
+    }
+
+    private func syncActiveInternalTabSnapshot() {
+        guard let index = activeInternalTabIndex() else { return }
+        internalTabs[index].surfaceTree = surfaceTree
+        internalTabs[index].focusedSurfaceId = focusedSurface?.id
+        internalTabs[index].title = currentInternalTabTitle(fallbackIndex: index)
+    }
+
+    private func syncAppStateSessions() {
+        let sessions = internalTabs.enumerated().map { index, tab in
+            Session(
+                id: tab.id,
+                name: internalTabDisplayTitle(for: tab, index: index),
+                agentState: .idle,
+                isActive: tab.id == activeInternalTabId
+            )
+        }
+
+        appState.replaceSessions(sessions, activeSessionId: activeInternalTabId)
+    }
+
+    private func internalTabDisplayTitle(for tab: InternalTerminalTab, index: Int) -> String {
+        let trimmed = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Shell \(index + 1)"
+        }
+
+        return trimmed
+    }
+
+    private func currentInternalTabTitle(fallbackIndex: Int) -> String {
+        if let title = focusedSurface?.title.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            return title
+        }
+
+        return internalTabDisplayTitle(for: internalTabs[fallbackIndex], index: fallbackIndex)
+    }
+
+    private func activeInternalTabIndex(for id: UUID? = nil) -> Int? {
+        let tabId = id ?? activeInternalTabId
+        return internalTabs.firstIndex(where: { $0.id == tabId })
+    }
+
+    private func focusTarget(for tab: InternalTerminalTab) -> Ghostty.SurfaceView? {
+        if let focusedSurfaceId = tab.focusedSurfaceId,
+           let focusedSurface = tab.surfaceTree.first(where: { $0.id == focusedSurfaceId }) {
+            return focusedSurface
+        }
+
+        return tab.surfaceTree.first
+    }
+
+    func openInternalTab(withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil) {
+        guard managesInternalTerminalTabs else {
+            _ = Self.newTab(ghostty, from: window, withBaseConfig: baseConfig)
+            return
+        }
+
+        guard let ghosttyApp = ghostty.app else { return }
+        syncActiveInternalTabSnapshot()
+
+        let surfaceView = Ghostty.SurfaceView(ghosttyApp, baseConfig: baseConfig)
+        let newTab = InternalTerminalTab(
+            id: UUID(),
+            surfaceTree: .init(view: surfaceView),
+            focusedSurfaceId: surfaceView.id,
+            title: "Shell \(internalTabs.count + 1)"
+        )
+
+        internalTabs.append(newTab)
+        switchToInternalTab(id: newTab.id)
+    }
+
+    func closeInternalTab(id: UUID) {
+        guard managesInternalTerminalTabs else {
+            closeTab(self)
+            return
+        }
+
+        guard let targetIndex = activeInternalTabIndex(for: id) else { return }
+
+        if internalTabs.count == 1 {
+            closeWindow(self)
+            return
+        }
+
+        let wasActive = internalTabs[targetIndex].id == activeInternalTabId
+        internalTabs.remove(at: targetIndex)
+
+        if wasActive {
+            let nextIndex = min(targetIndex, internalTabs.count - 1)
+            switchToInternalTab(id: internalTabs[nextIndex].id)
+        } else {
+            syncAppStateSessions()
+        }
+    }
+
+    private func switchToInternalTab(id: UUID) {
+        guard let targetIndex = activeInternalTabIndex(for: id) else { return }
+
+        let oldFocusedSurface = focusedSurface
+        syncActiveInternalTabSnapshot()
+
+        activeInternalTabId = id
+        let targetTab = internalTabs[targetIndex]
+        let focusTarget = focusTarget(for: targetTab)
+
+        surfaceTree = targetTab.surfaceTree
+        focusedSurface = focusTarget
+        window?.title = internalTabDisplayTitle(for: targetTab, index: targetIndex)
+        syncAppStateSessions()
+
+        if let focusTarget {
+            DispatchQueue.main.async {
+                Ghostty.moveFocus(to: focusTarget, from: oldFocusedSurface)
+            }
+        }
+    }
+
+    private func closeActiveInternalTabImmediately() {
+        guard managesInternalTerminalTabs else {
+            closeTabImmediately()
+            return
+        }
+
+        guard let activeIndex = activeInternalTabIndex() else {
+            closeWindowImmediately()
+            return
+        }
+
+        guard internalTabs.count > 1 else {
+            closeWindowImmediately()
+            return
+        }
+
+        internalTabs.remove(at: activeIndex)
+        let nextIndex = min(activeIndex, internalTabs.count - 1)
+        switchToInternalTab(id: internalTabs[nextIndex].id)
+    }
+
+    private func closeOtherInternalTabsImmediately() {
+        guard let activeIndex = activeInternalTabIndex(), internalTabs.count > 1 else { return }
+
+        let activeTab = internalTabs[activeIndex]
+        internalTabs = [activeTab]
+        activeInternalTabId = activeTab.id
+        syncAppStateSessions()
+    }
+
+    private func closeInternalTabsOnTheRightImmediately() {
+        guard let activeIndex = activeInternalTabIndex() else { return }
+        guard internalTabs.indices.contains(activeIndex + 1) else { return }
+
+        internalTabs.removeSubrange((activeIndex + 1)..<internalTabs.count)
+        syncAppStateSessions()
+    }
+
+    private func moveActiveInternalTab(by delta: Int) {
+        guard let activeIndex = activeInternalTabIndex(), internalTabs.count > 1 else { return }
+
+        syncActiveInternalTabSnapshot()
+
+        let finalIndex: Int
+        if delta < 0 {
+            finalIndex = max(0, activeIndex + delta)
+        } else {
+            finalIndex = min(internalTabs.count - 1, activeIndex + delta)
+        }
+
+        let wrappedIndex = finalIndex
+        guard wrappedIndex != activeIndex else { return }
+
+        let activeTab = internalTabs.remove(at: activeIndex)
+        internalTabs.insert(activeTab, at: wrappedIndex)
+        activeInternalTabId = activeTab.id
+        syncAppStateSessions()
+    }
+
+    private func gotoInternalTab(_ tabEnum: ghostty_action_goto_tab_e) {
+        guard internalTabs.count > 1 else { return }
+
+        let tabIndex = Int32(tabEnum.rawValue)
+        let finalIndex: Int
+
+        if tabIndex <= 0 {
+            guard let selectedIndex = activeInternalTabIndex() else { return }
+
+            if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
+                finalIndex = selectedIndex == 0 ? internalTabs.count - 1 : selectedIndex - 1
+            } else if tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue {
+                finalIndex = selectedIndex == internalTabs.count - 1 ? 0 : selectedIndex + 1
+            } else if tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue {
+                finalIndex = internalTabs.count - 1
+            } else {
+                return
+            }
+        } else {
+            finalIndex = min(Int(tabIndex - 1), internalTabs.count - 1)
+        }
+
+        guard internalTabs.indices.contains(finalIndex) else { return }
+        switchToInternalTab(id: internalTabs[finalIndex].id)
+    }
+
+    private func inheritedTabConfigFromFocusedSurface() -> Ghostty.SurfaceConfiguration? {
+        guard let surface = focusedSurface?.surface else { return nil }
+        return Ghostty.SurfaceConfiguration(
+            from: ghostty_surface_inherited_config(surface, GHOSTTY_SURFACE_CONTEXT_TAB)
+        )
     }
 
     // MARK: Terminal Creation
@@ -635,6 +885,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
+        if managesInternalTerminalTabs && internalTabs.count > 1 {
+            closeTab(nil)
+            return
+        }
+
         // More than 1 window means we have tabs and we're closing a tab
         if window?.tabGroup?.windows.count ?? 0 > 1 {
             closeTab(nil)
@@ -646,6 +901,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     func closeTabImmediately(registerRedo: Bool = true) {
+        if managesInternalTerminalTabs {
+            closeActiveInternalTabImmediately()
+            return
+        }
+
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup,
                 tabGroup.windows.count > 1 else {
@@ -678,6 +938,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     private func closeOtherTabsImmediately() {
+        if managesInternalTerminalTabs {
+            closeOtherInternalTabsImmediately()
+            return
+        }
+
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup else { return }
         guard tabGroup.windows.count > 1 else { return }
@@ -727,6 +992,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     private func closeTabsOnTheRightImmediately() {
+        if managesInternalTerminalTabs {
+            closeInternalTabsOnTheRightImmediately()
+            return
+        }
+
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup else { return }
         guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
@@ -1037,11 +1307,23 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             focusedSurface = view
         }
 
+        syncActiveInternalTabSnapshot()
+        syncAppStateSessions()
+
         // Initialize our content view to the SwiftUI root
         let container = TerminalViewContainer {
-            Phase1TerminalIDEView(appState: appState) {
+            Phase1TerminalIDEView(
+                appState: appState,
+                onNewTab: { [weak self] in
+                    self?.openInternalTab(withBaseConfig: self?.inheritedTabConfigFromFocusedSurface())
+                },
+                onCloseTab: { [weak self] id in
+                    self?.closeInternalTab(id: id)
+                },
+                terminalContent: {
                 TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
-            }
+                }
+            )
         }
 
         // Set the initial content size on the container so that
@@ -1051,6 +1333,14 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         container.initialContentSize = phase1InitialContentSize ?? focusedSurface?.initialSize
 
         window.contentView = container
+        window.tabbingMode = .disallowed
+
+        if managesInternalTerminalTabs && window.styleMask.contains(.titled) {
+            window.styleMask.insert(.fullSizeContentView)
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+            window.isMovableByWindowBackground = true
+        }
 
         // If we have a default size, we want to apply it.
         if let defaultSize {
@@ -1231,11 +1521,39 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func newTab(_ sender: Any?) {
+        if managesInternalTerminalTabs {
+            openInternalTab(withBaseConfig: inheritedTabConfigFromFocusedSurface())
+            return
+        }
+
         guard let surface = focusedSurface?.surface else { return }
         ghostty.newTab(surface: surface)
     }
 
     @IBAction func closeTab(_ sender: Any?) {
+        if managesInternalTerminalTabs {
+            guard internalTabs.count > 1 else {
+                closeWindow(sender)
+                return
+            }
+
+            guard let activeIndex = activeInternalTabIndex() else { return }
+            let activeTab = internalTabs[activeIndex]
+
+            guard activeTab.surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
+                closeTabImmediately()
+                return
+            }
+
+            confirmClose(
+                messageText: "Close Tab?",
+                informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeTabImmediately()
+            }
+            return
+        }
+
         guard let window = window else { return }
         guard window.tabGroup?.windows.count ?? 0 > 1 else {
             closeWindow(sender)
@@ -1256,6 +1574,28 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeOtherTabs(_ sender: Any?) {
+        if managesInternalTerminalTabs {
+            guard internalTabs.count > 1 else { return }
+
+            let needsConfirm = internalTabs.enumerated().contains { index, tab in
+                if index == activeInternalTabIndex() { return false }
+                return tab.surfaceTree.contains(where: { $0.needsConfirmQuit })
+            }
+
+            if !needsConfirm {
+                self.closeOtherTabsImmediately()
+                return
+            }
+
+            confirmClose(
+                messageText: "Close Other Tabs?",
+                informativeText: "At least one other tab still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeOtherTabsImmediately()
+            }
+            return
+        }
+
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup else { return }
 
@@ -1288,6 +1628,29 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
+        if managesInternalTerminalTabs {
+            guard let currentIndex = activeInternalTabIndex() else { return }
+            let tabsToClose = internalTabs.enumerated().filter { $0.offset > currentIndex }
+            guard !tabsToClose.isEmpty else { return }
+
+            let needsConfirm = tabsToClose.contains { (_, tab) in
+                tab.surfaceTree.contains(where: { $0.needsConfirmQuit })
+            }
+
+            if !needsConfirm {
+                self.closeTabsOnTheRightImmediately()
+                return
+            }
+
+            confirmClose(
+                messageText: "Close Tabs on the Right?",
+                informativeText: "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+            ) {
+                self.closeTabsOnTheRightImmediately()
+            }
+            return
+        }
+
         guard let window = window else { return }
         guard let tabGroup = window.tabGroup else { return }
         guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
@@ -1323,6 +1686,21 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     @IBAction override func closeWindow(_ sender: Any?) {
         guard let window = window else { return }
+
+        if managesInternalTerminalTabs {
+            guard internalTabs.contains(where: { $0.surfaceTree.contains(where: { $0.needsConfirmQuit }) }) else {
+                closeWindowImmediately()
+                return
+            }
+
+            confirmClose(
+                messageText: "Close Window?",
+                informativeText: "All terminal sessions in this window will be terminated.",
+            ) {
+                self.closeWindowImmediately()
+            }
+            return
+        }
 
         // We need to check all the windows in our tab group for confirmation
         // if we're closing the window. If we don't have a tabgroup for any
@@ -1360,6 +1738,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
     override func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
         super.focusedSurfaceDidChange(to: to)
+        syncActiveInternalTabSnapshot()
+        syncAppStateSessions()
 
         // We always cancel our event listener
         surfaceAppearanceCancellables.removeAll()
@@ -1393,11 +1773,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @objc private func onMoveTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the move action
         guard let action = notification.userInfo?[Notification.Name.GhosttyMoveTabKey] as? Ghostty.Action.MoveTab else { return }
         guard action.amount != 0 else { return }
+
+        if managesInternalTerminalTabs {
+            moveActiveInternalTab(by: action.amount)
+            return
+        }
+
+        guard let window = self.window else { return }
 
         // Determine our current selected index
         guard let windowController = window.windowController else { return }
@@ -1456,11 +1842,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     @objc private func onGotoTab(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
-        guard let window = self.window else { return }
 
         // Get the tab index from the notification
         guard let tabEnumAny = notification.userInfo?[Ghostty.Notification.GotoTabKey] else { return }
         guard let tabEnum = tabEnumAny as? ghostty_action_goto_tab_e else { return }
+
+        if managesInternalTerminalTabs {
+            gotoInternalTab(tabEnum)
+            return
+        }
+
+        guard let window = self.window else { return }
         let tabIndex: Int32 = tabEnum.rawValue
 
         guard let windowController = window.windowController else { return }
@@ -1586,6 +1978,11 @@ extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(closeTabsOnTheRight):
+            if managesInternalTerminalTabs {
+                guard let currentIndex = activeInternalTabIndex() else { return false }
+                return internalTabs.indices.contains { $0 > currentIndex }
+            }
+
             guard let window, let tabGroup = window.tabGroup else { return false }
             guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
             return tabGroup.windows.indices.contains { $0 > currentIndex }
@@ -1675,7 +2072,11 @@ extension TerminalController {
             Phase1TerminalIDELayout.sidebarWidth +
             Phase1TerminalIDELayout.rightPanelWidth +
             (Phase1TerminalIDELayout.dividerWidth * 2)
-        let height = terminalSize.height + Phase1TerminalIDELayout.tabBarHeight
+
+        let height =
+            terminalSize.height +
+            Phase1TerminalIDELayout.windowChromeHeight +
+            Phase1TerminalIDELayout.tabBarHeight
 
         return .init(width: width, height: height)
     }

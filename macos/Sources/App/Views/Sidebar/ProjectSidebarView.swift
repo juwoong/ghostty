@@ -4,17 +4,33 @@ import SwiftUI
 struct ProjectSidebarView: View {
     @ObservedObject var appState: AppState
 
+    private let sidebarBackground = Color(red: 0.11, green: 0.11, blue: 0.105)
+    private let headerTextColor = Color.white.opacity(0.55)
+    private let rowTextColor = Color.white.opacity(0.92)
+    private let secondaryTextColor = Color.white.opacity(0.46)
+    private let selectedRowFill = Color(red: 0.18, green: 0.27, blue: 0.42).opacity(0.72)
+    private let selectedRowStroke = Color(red: 0.41, green: 0.55, blue: 0.74).opacity(0.45)
+    private let rowBackground = Color.white.opacity(0.025)
+    private let rowBorder = Color.white.opacity(0.045)
+    private let separator = Color.white.opacity(0.06)
+
     var body: some View {
         VStack(spacing: 0) {
             header
 
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(appState.projects) { project in
                         ProjectSectionView(
                             project: project,
                             isActiveProject: project.id == appState.activeProject?.id,
                             activeSessionId: appState.activeSessionId,
+                            rowTextColor: rowTextColor,
+                            secondaryTextColor: secondaryTextColor,
+                            selectedRowFill: selectedRowFill,
+                            selectedRowStroke: selectedRowStroke,
+                            rowBackground: rowBackground,
+                            rowBorder: rowBorder,
                             onToggleExpansion: {
                                 appState.toggleProjectExpansion(id: project.id)
                             },
@@ -25,44 +41,71 @@ struct ProjectSidebarView: View {
                     }
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                .padding(.vertical, 10)
             }
-
-            footer
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(sidebarBackground)
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text("Projects")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(headerTextColor)
                 .textCase(.uppercase)
-                .tracking(0.8)
+                .tracking(1.0)
 
             Spacer(minLength: 0)
+
+            Button(action: addProject, label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(headerTextColor)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.035))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                    )
+            }
+            )
+            .buttonStyle(.plain)
+            .accessibilityLabel("Register project")
         }
         .padding(.horizontal, 14)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+        .padding(.top, 13)
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(separator)
+                .frame(height: 1)
+        }
     }
 
-    private var footer: some View {
-        HStack {
-            Button {
-            } label: {
-                Label("Add Project", systemImage: "plus")
-                    .labelStyle(.titleAndIcon)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("Add project placeholder")
+    private func addProject() {
+        let panel = NSOpenPanel()
+        panel.title = "Register Project"
+        panel.message = "Choose a project directory to show in the sidebar."
+        panel.prompt = "Register"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(
+            fileURLWithPath: appState.activeProject?.directoryPath ?? NSHomeDirectory()
+        )
 
-            Spacer(minLength: 0)
+        guard panel.runModal() == .OK, let directoryURL = panel.url else { return }
+
+        switch appState.registerProject(directoryPath: directoryURL.path) {
+        case .added:
+            return
+        case .duplicate, .invalidPath:
+            NSSound.beep()
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
     }
 }
 
@@ -70,52 +113,63 @@ private struct ProjectSectionView: View {
     let project: Project
     let isActiveProject: Bool
     let activeSessionId: UUID?
+    let rowTextColor: Color
+    let secondaryTextColor: Color
+    let selectedRowFill: Color
+    let selectedRowStroke: Color
+    let rowBackground: Color
+    let rowBorder: Color
     let onToggleExpansion: () -> Void
     let onSelectSession: (Session) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 7) {
             Button(action: onToggleExpansion) {
                 HStack(spacing: 8) {
                     Image(systemName: project.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12, height: 12)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(secondaryTextColor)
+                        .frame(width: 11, height: 11)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(project.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(isActiveProject ? .primary : .primary)
-                            .lineLimit(1)
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.55))
 
-                        Text(project.directoryPath)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Text(project.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(rowTextColor)
+                        .lineLimit(1)
 
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.vertical, 9)
                 .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isActiveProject ? Color.primary.opacity(0.08) : Color.clear)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isActiveProject ? Color.white.opacity(0.05) : rowBackground)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(isActiveProject ? Color.white.opacity(0.075) : rowBorder, lineWidth: 1)
                 )
             }
             .buttonStyle(.plain)
 
             if project.isExpanded {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 5) {
                     ForEach(project.sessions) { session in
                         SessionRowView(
                             session: session,
                             isActive: session.id == activeSessionId,
+                            rowTextColor: rowTextColor,
+                            secondaryTextColor: secondaryTextColor,
+                            selectedRowFill: selectedRowFill,
+                            selectedRowStroke: selectedRowStroke,
                             onSelect: { onSelectSession(session) }
                         )
                     }
                 }
-                .padding(.leading, 18)
+                .padding(.leading, 16)
             }
         }
     }
@@ -124,32 +178,50 @@ private struct ProjectSectionView: View {
 private struct SessionRowView: View {
     let session: Session
     let isActive: Bool
+    let rowTextColor: Color
+    let secondaryTextColor: Color
+    let selectedRowFill: Color
+    let selectedRowStroke: Color
     let onSelect: () -> Void
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 StateDot(state: session.agentState)
 
                 Text(session.name)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? rowTextColor : secondaryTextColor)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
+
+                if isActive {
+                    Text("CC")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isActive ? selectedRowFill : Color.clear)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isActive ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isActive ? selectedRowStroke : Color.clear, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isActive ? .primary : .secondary)
+        .accessibilityLabel("\(session.name) session")
+        .accessibilityValue(isActive ? "Selected" : "Not selected")
     }
 }
 
@@ -159,10 +231,10 @@ private struct StateDot: View {
     var body: some View {
         Circle()
             .fill(color(for: state))
-            .frame(width: 8, height: 8)
+            .frame(width: 7, height: 7)
             .overlay(
                 Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
             )
             .accessibilityLabel(Text("\(stateLabel) state"))
     }
@@ -180,15 +252,15 @@ private struct StateDot: View {
     private func color(for state: AgentState) -> Color {
         switch state {
         case .idle:
-            return Color.secondary.opacity(0.8)
+            return Color.white.opacity(0.44)
         case .thinking:
-            return Color.blue
+            return Color(red: 0.44, green: 0.67, blue: 0.98)
         case .waitingInput:
-            return Color.yellow
+            return Color(red: 0.94, green: 0.75, blue: 0.28)
         case .toolRunning:
-            return Color.green
+            return Color(red: 0.35, green: 0.75, blue: 0.52)
         case .error:
-            return Color.red
+            return Color(red: 0.89, green: 0.36, blue: 0.33)
         }
     }
 }

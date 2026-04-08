@@ -2,13 +2,18 @@ import SwiftUI
 
 struct TabBarView: View {
     @ObservedObject var appState: AppState
+    let onNewTab: () -> Void
+    let onCloseTab: (UUID) -> Void
 
-    private let barColor = Color(red: 0.12, green: 0.12, blue: 0.12)
-    private let inactiveTabColor = Color.white.opacity(0.04)
-    private let activeTabColor = Color.white.opacity(0.12)
-    private let borderColor = Color.white.opacity(0.08)
-    private let textColor = Color.white.opacity(0.88)
-    private let mutedTextColor = Color.white.opacity(0.58)
+    private let barColor = Color(red: 0.10, green: 0.10, blue: 0.10)
+    private let activeTabColor = Color(red: 0.16, green: 0.16, blue: 0.16)
+    private let inactiveTabColor = Color(red: 0.12, green: 0.12, blue: 0.12)
+    private let borderColor = Color.white.opacity(0.07)
+    private let activeIndicatorColor = Color(red: 0.26, green: 0.65, blue: 0.98)
+    private let textColor = Color.white.opacity(0.87)
+    private let mutedTextColor = Color.white.opacity(0.62)
+    private let secondaryMutedTextColor = Color.white.opacity(0.40)
+    private let buttonFill = Color.white.opacity(0.035)
 
     private var sessions: [Session] {
         activeProject?.sessions ?? []
@@ -19,24 +24,25 @@ struct TabBarView: View {
     }
 
     var body: some View {
-        ZStack {
-            barColor
-
-            HStack(spacing: 8) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(sessions) { session in
-                            sessionTab(for: session)
-                        }
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 0) {
+                    ForEach(sessions) { session in
+                        sessionTab(for: session)
                     }
-                    .padding(.leading, 10)
-                    .padding(.vertical, 6)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                addSessionButton
-                    .padding(.trailing, 10)
+                .padding(.leading, 10)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            addSessionButton
+                .padding(.horizontal, 10)
+        }
+        .background(barColor)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.03))
+                .frame(height: 1)
         }
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -51,54 +57,83 @@ struct TabBarView: View {
     private func sessionTab(for session: Session) -> some View {
         let isActive = session.id == appState.activeSessionId
 
-        Button {
-            appState.selectSession(id: session.id)
-        } label: {
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(tabDotColor(for: session.agentState))
-                    .frame(width: 7, height: 7)
+        ZStack(alignment: .trailing) {
+            Button {
+                appState.selectSession(id: session.id)
+            } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "doc.text.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(tabDotColor(for: session.agentState))
 
-                Text(session.name)
-                    .font(.system(size: 12, weight: isActive ? .semibold : .medium, design: .rounded))
-                    .foregroundStyle(isActive ? textColor : mutedTextColor)
-                    .lineLimit(1)
+                    Text(session.name)
+                        .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                        .foregroundStyle(isActive ? textColor : mutedTextColor)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 13)
+                .padding(.trailing, 34)
+                .frame(minWidth: 156, idealWidth: 188, maxWidth: 220, minHeight: 36)
+                .background(isActive ? activeTabColor : inactiveTabColor)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(isActive ? activeIndicatorColor : .clear)
+                        .frame(height: 2)
+                }
+                .overlay(alignment: .trailing) {
+                    Rectangle()
+                        .fill(borderColor)
+                        .frame(width: 1)
+                }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isActive ? activeTabColor : inactiveTabColor)
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(session.name) tab")
+            .accessibilityValue(isActive ? "Selected" : "Not selected")
+
+            Button {
+                onCloseTab(session.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(isActive ? mutedTextColor : secondaryMutedTextColor)
+                    .frame(width: 18, height: 18)
+                    .background {
+                        Circle()
+                            .fill(Color.white.opacity(isActive ? 0.07 : 0.03))
+                    }
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(isActive ? Color.white.opacity(0.15) : Color.clear, lineWidth: 1)
+            .buttonStyle(.plain)
+            .padding(.trailing, 9)
+            .accessibilityLabel("Close \(session.name) tab")
+        }
+        .overlay(alignment: .leading) {
+            if session.id == sessions.first?.id {
+                Rectangle()
+                    .fill(borderColor)
+                    .frame(width: 1)
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(session.name) tab")
-        .accessibilityValue(isActive ? "Selected" : "Not selected")
     }
 
     private var addSessionButton: some View {
-        Button {
-            // Phase 1 placeholder.
-        } label: {
+        Button(action: onNewTab) {
             Image(systemName: "plus")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(textColor)
-                .frame(width: 28, height: 24)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.72))
+                .frame(width: 24, height: 24)
                 .background {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.white.opacity(0.05))
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(buttonFill)
                 }
                 .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
                 }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("New session")
+        .accessibilityLabel("New tab")
     }
 
     private func tabDotColor(for state: AgentState) -> Color {
