@@ -222,6 +222,31 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             .store(in: &appStateCancellables)
     }
 
+    private func promptForProjectRegistration() {
+        let hadProjects = appState.hasProjects
+
+        let panel = NSOpenPanel()
+        panel.title = "Register Project"
+        panel.message = "Choose a project directory to show in the sidebar."
+        panel.prompt = "Register"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: appState.projectPickerDirectoryPath)
+
+        guard panel.runModal() == .OK, let directoryURL = panel.url else { return }
+
+        switch appState.registerProject(directoryPath: directoryURL.path) {
+        case .added:
+            if !hadProjects || appState.activeSession == nil {
+                syncAppStateSessions()
+            }
+        case .duplicate, .invalidPath:
+            NSSound.beep()
+        }
+    }
+
     private func syncActiveInternalTabSnapshot() {
         guard let index = activeInternalTabIndex() else { return }
         internalTabs[index].surfaceTree = surfaceTree
@@ -1314,6 +1339,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let container = TerminalViewContainer {
             Phase1TerminalIDEView(
                 appState: appState,
+                onRegisterProject: { [weak self] in
+                    self?.promptForProjectRegistration()
+                },
                 onNewTab: { [weak self] in
                     self?.openInternalTab(withBaseConfig: self?.inheritedTabConfigFromFocusedSurface())
                 },
@@ -1321,7 +1349,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                     self?.closeInternalTab(id: id)
                 },
                 terminalContent: {
-                TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
+                    TerminalView(ghostty: ghostty, viewModel: self, delegate: self)
                 }
             )
         }

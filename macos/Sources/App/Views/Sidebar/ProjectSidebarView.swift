@@ -1,8 +1,8 @@
-import AppKit
 import SwiftUI
 
 struct ProjectSidebarView: View {
     @ObservedObject var appState: AppState
+    let onRegisterProject: () -> Void
 
     private let sidebarBackground = Color(red: 0.11, green: 0.11, blue: 0.105)
     private let headerTextColor = Color.white.opacity(0.55)
@@ -20,23 +20,30 @@ struct ProjectSidebarView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(appState.projects) { project in
-                        ProjectSectionView(
-                            project: project,
-                            isActiveProject: project.id == appState.activeProject?.id,
-                            activeSessionId: appState.activeSessionId,
-                            rowTextColor: rowTextColor,
-                            secondaryTextColor: secondaryTextColor,
-                            selectedRowFill: selectedRowFill,
-                            selectedRowStroke: selectedRowStroke,
-                            rowBackground: rowBackground,
-                            rowBorder: rowBorder,
-                            onToggleExpansion: {
-                                appState.toggleProjectExpansion(id: project.id)
-                            },
-                            onSelectSession: { session in
-                                appState.selectSession(id: session.id)
-                            }
+                    if appState.hasProjects {
+                        ForEach(appState.projects) { project in
+                            ProjectSectionView(
+                                project: project,
+                                isActiveProject: project.id == appState.activeProject?.id,
+                                activeSessionId: appState.activeSessionId,
+                                rowTextColor: rowTextColor,
+                                secondaryTextColor: secondaryTextColor,
+                                selectedRowFill: selectedRowFill,
+                                selectedRowStroke: selectedRowStroke,
+                                rowBackground: rowBackground,
+                                rowBorder: rowBorder,
+                                onToggleExpansion: {
+                                    appState.toggleProjectExpansion(id: project.id)
+                                },
+                                onSelectSession: { session in
+                                    appState.selectSession(id: session.id)
+                                }
+                            )
+                        }
+                    } else {
+                        SidebarEmptyStateView(
+                            textColor: secondaryTextColor,
+                            onRegisterProject: onRegisterProject
                         )
                     }
                 }
@@ -57,7 +64,7 @@ struct ProjectSidebarView: View {
 
             Spacer(minLength: 0)
 
-            Button(action: addProject, label: {
+            Button(action: onRegisterProject, label: {
                 Image(systemName: "plus")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(headerTextColor)
@@ -84,28 +91,40 @@ struct ProjectSidebarView: View {
                 .frame(height: 1)
         }
     }
+}
 
-    private func addProject() {
-        let panel = NSOpenPanel()
-        panel.title = "Register Project"
-        panel.message = "Choose a project directory to show in the sidebar."
-        panel.prompt = "Register"
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(
-            fileURLWithPath: appState.activeProject?.directoryPath ?? NSHomeDirectory()
-        )
+private struct SidebarEmptyStateView: View {
+    let textColor: Color
+    let onRegisterProject: () -> Void
 
-        guard panel.runModal() == .OK, let directoryURL = panel.url else { return }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("프로젝트가 없습니다")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.white.opacity(0.82))
 
-        switch appState.registerProject(directoryPath: directoryURL.path) {
-        case .added:
-            return
-        case .duplicate, .invalidPath:
-            NSSound.beep()
+            Text("프로젝트를 등록하면 여기서 세션과 폴더를 바로 전환할 수 있습니다.")
+                .font(.footnote)
+                .foregroundStyle(textColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button("프로젝트 등록") {
+                onRegisterProject()
+            }
+            .buttonStyle(.plain)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(Color.white.opacity(0.78))
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
     }
 }
 

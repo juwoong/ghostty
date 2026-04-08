@@ -18,7 +18,7 @@ final class AppState: ObservableObject {
     @Published var projects: [Project]
     @Published var activeSessionId: UUID?
 
-    private let projectRootPath: String?
+    private let preferredProjectDirectoryPath: String
     private let userDefaults: UserDefaults?
 
     convenience init(
@@ -26,14 +26,11 @@ final class AppState: ObservableObject {
         userDefaults: UserDefaults = .ghostty
     ) {
         let normalizedRootPath = Self.normalizeDirectoryPath(projectRootPath)
-        let projects = Self.initialProjects(
-            projectRootPath: normalizedRootPath,
-            userDefaults: userDefaults
-        )
+        let projects = Self.initialProjects(userDefaults: userDefaults)
 
         self.init(
             projects: projects,
-            projectRootPath: normalizedRootPath,
+            preferredProjectDirectoryPath: normalizedRootPath,
             userDefaults: userDefaults
         )
     }
@@ -41,11 +38,13 @@ final class AppState: ObservableObject {
     init(
         projects: [Project],
         activeSessionId: UUID? = nil,
-        projectRootPath: String? = nil,
+        preferredProjectDirectoryPath: String? = nil,
         userDefaults: UserDefaults? = nil
     ) {
         self.projects = projects
-        self.projectRootPath = projectRootPath.map(Self.normalizeDirectoryPath)
+        self.preferredProjectDirectoryPath = Self.normalizeDirectoryPath(
+            preferredProjectDirectoryPath ?? FileManager.default.currentDirectoryPath
+        )
         self.userDefaults = userDefaults
         self.activeSessionId = activeSessionId ?? projects
             .flatMap(\.sessions)
@@ -64,6 +63,14 @@ final class AppState: ObservableObject {
         projects.first(where: { project in
             project.sessions.contains(where: { $0.id == activeSessionId })
         }) ?? projects.first
+    }
+
+    var hasProjects: Bool {
+        !projects.isEmpty
+    }
+
+    var projectPickerDirectoryPath: String {
+        activeProject?.directoryPath ?? preferredProjectDirectoryPath
     }
 
     func selectSession(id: UUID) {
@@ -137,10 +144,8 @@ final class AppState: ObservableObject {
     private func persistProjects() {
         guard let userDefaults else { return }
 
-        let storedProjects = projects.compactMap { project -> StoredProject? in
+        let storedProjects = projects.map { project in
             let normalizedPath = Self.normalizeDirectoryPath(project.directoryPath)
-            guard normalizedPath != projectRootPath else { return nil }
-
             return StoredProject(
                 directoryPath: normalizedPath,
                 isExpanded: project.isExpanded
@@ -152,19 +157,15 @@ final class AppState: ObservableObject {
         }
     }
 
-    private static func initialProjects(
-        projectRootPath: String,
-        userDefaults: UserDefaults
-    ) -> [Project] {
-        let rootProject = Project.sidebarRoot(directoryPath: projectRootPath)
+    private static func initialProjects(userDefaults: UserDefaults) -> [Project] {
         let storedProjects = loadStoredProjects(from: userDefaults)
 
         guard !storedProjects.isEmpty else {
-            return [rootProject]
+            return []
         }
 
-        var seenPaths = Set([projectRootPath])
-        var projects = [rootProject]
+        var seenPaths = Set<String>()
+        var projects: [Project] = []
 
         for storedProject in storedProjects {
             let normalizedPath = normalizeDirectoryPath(storedProject.directoryPath)
